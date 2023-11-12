@@ -1,7 +1,7 @@
-import { app, InvocationContext, Timer } from "@azure/functions";
+import { app } from '@azure/functions';
 const GraphQL = require("./graphql");
 
-export async function timerTrigger1(myTimer: Timer, context: InvocationContext): Promise<void> {
+export async function timerTrigger1(): Promise<void> {
   const org = "anyproto";
   const projectNumber = 4;
 
