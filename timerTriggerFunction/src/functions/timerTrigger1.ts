@@ -1,5 +1,5 @@
-import { app } from '@azure/functions';
-const GraphQL = require("./graphql");
+import { app } from "@azure/functions";
+const GraphQL = require("../../src/graphql");
 
 export async function timerTrigger1(): Promise<void> {
   const org = "anyproto";
