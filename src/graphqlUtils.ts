@@ -1,7 +1,7 @@
 const { graphql } = require("@octokit/graphql");
 
 // specify the max number of items to fetch in a single request, max is 100
-const pagination = 10;
+const pagination = 20;
 const maxPagination = 100;
 
 // create a graphql client with authentication via access token
@@ -12,8 +12,88 @@ const graphqlWithAuth = graphql.defaults({
 });
 
 export default {
+  // add a label to an issue
+  async addLabel(org: string, repo: string, issueNumber: number, label: string) {
+    const issueId = await this.getIssueIdByRepo(org, repo, issueNumber);
+    const labelId = await this.getLabelId(org, repo, label);
+
+    try {
+      await graphqlWithAuth(
+        `mutation addLabelToIssue (
+                $issueId: ID!
+                $labelId: ID!
+            ) {
+                addLabelsToLabelable(
+                    input: {
+                        labelableId: $issueId
+                        labelIds: [$labelId]
+                    }
+                ) {
+                    clientMutationId
+                }
+            }`,
+        {
+          issueId: issueId,
+          labelId: labelId,
+        }
+      );
+    } catch (error: any) {
+      console.log(error);
+    }
+  },
+
+  // remove a label from an issue
+  async removeLabel(org: string, repo: string, issueNumber: number, label: string) {
+    const issueId = await this.getIssueIdByRepo(org, repo, issueNumber);
+    const labelId = await this.getLabelId(org, repo, label);
+
+    try {
+      await graphqlWithAuth(
+        `mutation removeLabelFromIssue (
+                $issueId: ID!
+                $labelId: ID!
+            ) {
+                removeLabelsFromLabelable(
+                    input: {
+                        labelableId: $issueId
+                        labelIds: [$labelId]
+                    }
+                ) {
+                    clientMutationId
+                }
+            }`,
+        {
+          issueId: issueId,
+          labelId: labelId,
+        }
+      );
+    } catch (error: any) {
+      console.log(error);
+    }
+  },
+
+  // return the label id for a given label in an organization and repository
+  async getLabelId(org: string, repo: string, label: string) {
+    const data = await graphqlWithAuth(
+      `query ($org: String!, $repo: String!, $label: String!) {
+            repository(owner: $org, name: $repo) {
+                label(name: $label) {
+                    id
+                }
+            }
+        }`,
+      {
+        org: org,
+        repo: repo,
+        label: label,
+      }
+    );
+
+    return data?.repository.label.id;
+  },
+
   // return the project id for a given project number in a given organization
-  async getProjectID(org: string, projectNumber: number) {
+  async getProjectId(org: string, projectNumber: number) {
     const project = await graphqlWithAuth(
       `query ($org: String!, $projectNumber: Int!) {
             organization(login: $org) {
@@ -32,10 +112,10 @@ export default {
   },
 
   // return the fields (e.g. Assignees, Status, Lead Contributor) for a given project id
-  async getProjectFields(projectID: any) {
+  async getProjectFields(projectId: any) {
     return await graphqlWithAuth(
-      `query ($projectID: ID!) {
-            node(id: $projectID) {
+      `query ($projectId: ID!, $pagination: Int!) {
+            node(id: $projectId) {
                 ... on ProjectV2 {
                     fields(first: $pagination) {
                         nodes {
@@ -67,34 +147,38 @@ export default {
             }
         }`,
       {
-        projectID: projectID,
+        projectId: projectId,
+        pagination: pagination,
       }
     );
   },
 
-  // return the "Status" field
-  async getStatusField(projectID: any) {
-    const fields = await this.getProjectFields(projectID);
-    return fields?.node.fields.nodes.find((field: any) => field.name === "Status");
+  // return a field with name "fieldName"
+  async getField(projectId: any, fieldName: string) {
+    const projectFields = await this.getProjectFields(projectId);
+    return projectFields?.node.fields.nodes.find((projectFields: any) => projectFields.name === fieldName);
   },
 
-  // return the ID of "Status" field
-  async getStatusFieldID(projectID: any) {
-    const statusField = await this.getStatusField(projectID);
-    return statusField?.id;
+  // return the Id of a field with name "fieldName"
+  async getFieldId(projectId: any, fieldName: string) {
+    const field = await this.getField(projectId, fieldName);
+    return field?.id;
   },
 
-  // return the ID of the given status option (e.g. "🆕 New")
-  async getStatusOptionID(projectID: any, statusOptionName: string) {
-    const statusField = await this.getStatusField(projectID);
+  // return the Id of the given status option (e.g. "🆕 New")
+  async getStatusOptionId(projectId: any, statusOptionName: string) {
+    if (!["🆕 New", "🏗 In progress", "👀 In review", "✅ Done"].includes(statusOptionName)) {
+      throw new Error("Invalid status field option: '" + statusOptionName + "'");
+    }
+    const statusField = await this.getField(projectId, "Status");
     return statusField?.options.find((option: any) => option.name === statusOptionName)?.id;
   },
 
   // return the items (issues) for a given project id
-  async getProjectItems(projectID: any) {
+  async getProjectItems(projectId: any) {
     return await graphqlWithAuth(
-      `query ($projectID: ID!, $pagination: Int!, $maxPagination: Int!) {
-            node(id: $projectID) {
+      `query ($projectId: ID!, $pagination: Int!, $maxPagination: Int!) {
+            node(id: $projectId) {
                 ... on ProjectV2 {
                     items(first: $maxPagination) {
                         nodes{
@@ -139,6 +223,9 @@ export default {
                                 ...on Issue {
                                     title
                                     number
+                                    repository {
+                                        name
+                                    }
                                     assignees(first: $pagination) {
                                         nodes{
                                             login
@@ -152,7 +239,7 @@ export default {
             }
         }`,
       {
-        projectID: projectID,
+        projectId: projectId,
         pagination: pagination,
         maxPagination: maxPagination,
       }
@@ -160,67 +247,92 @@ export default {
   },
 
   // return the "Issue" item
-  async getIssueItem(projectID: any, issueNumber: number) {
-    const items = await this.getProjectItems(projectID);
+  async getIssueItem(projectId: any, issueNumber: number) {
+    const items = await this.getProjectItems(projectId);
     return items?.node.items.nodes.find((item: any) => item.content.number === issueNumber);
   },
 
-  // return the ID of "Issue" item
-  async getIssueItemID(projectID: any, issueNumber: number) {
-    return (await this.getIssueItem(projectID, issueNumber))?.id;
+  // return the Id of "Issue" item by project
+  async getIssueItemIdByProject(projectId: any, issueNumber: number) {
+    return (await this.getIssueItem(projectId, issueNumber))?.id;
   },
 
   // return the "Status" field of "Issue" item
-  async getIssueItemStatus(projectID: any, issueNumber: number) {
-    const issueItem = await this.getIssueItem(projectID, issueNumber);
+  async getIssueItemStatus(projectId: any, issueNumber: number) {
+    const issueItem = await this.getIssueItem(projectId, issueNumber);
     return issueItem?.fieldValues.nodes.find((fieldValue: any) => fieldValue.field?.name === "Status")?.name;
   },
 
-  // return "Number" and "Repository" of pull requests that are linked to this issue
-  async getLinkedPullRequestNumbers(projectID: any, issueNumber: number) {
-    const issueItem = await this.getIssueItem(projectID, issueNumber);
-    return issueItem?.fieldValues.nodes
-      .find((field: any) => field.pullRequests)
-      ?.pullRequests.nodes.map((pr: any) => ({ number: pr.number, repo: pr.repository.name }));
-  },
-
-  // return "Number" of issues that are linked to this pull request
-  async getLinkedIssueNumbers(projectID: any, pullRequestNumber: number, pullRequestRepo: string) {
-    const projectItems = await this.getProjectItems(projectID);
-    const issueItems = projectItems?.node.items.nodes.filter((item: any) =>
-      item.fieldValues.nodes.some((field: any) =>
-        field.pullRequests?.nodes.some((pr: any) => pr.number === pullRequestNumber && pr.repository.name === pullRequestRepo)
-      )
+  // return the Id of "Issue" by repository
+  async getIssueIdByRepo(org: string, repository: string, issueNumber: number) {
+    const issue = await graphqlWithAuth(
+      `query ($org: String!, $repository: String!, $issueNumber: Int!) {
+            repository(owner: $org, name: $repository) {
+                issue(number: $issueNumber) {
+                    id
+                }
+            }
+        }`,
+      {
+        org: org,
+        repository: repository,
+        issueNumber: issueNumber,
+      }
     );
 
-    return issueItems?.map((issueItem: any) => issueItem.content.number);
+    return issue?.repository.issue.id;
   },
 
-  // change "Status" of an "Item" to given "Option"
-  async changeItemStatus(projectID: any, itemID: any, statusFieldOption: string) {
-    const statusFieldID = await this.getStatusFieldID(projectID);
-    let statusFieldOptionID;
-    if (["🆕 New", "🏗 In progress", "👀 In review", "✅ Done"].includes(statusFieldOption)) {
-      statusFieldOptionID = await this.getStatusOptionID(projectID, statusFieldOption);
-    } else {
-      throw new Error("Invalid status field option: '" + statusFieldOption + "'");
+  // add "Issue" to given project and return the Id of the new "Item"
+  async addIssueToProject(projectId: any, org: string, repo: string, issueNumber: number) {
+    const contentId = await this.getIssueIdByRepo(org, repo, issueNumber);
+    try {
+      const response = await graphqlWithAuth(
+        `mutation addProjectItem (
+                $projectId: ID!
+                $contentId: ID!
+            ) {
+                addProjectV2ItemById(
+                    input: {
+                        projectId: $projectId
+                        contentId: $contentId
+                    }
+                ) {
+                    item {
+                        id
+                    }
+                }
+            }`,
+        {
+          projectId: projectId,
+          contentId: contentId,
+        }
+      );
+      return response?.addProjectV2ItemById.item.id;
+    } catch (error: any) {
+      console.log(error);
     }
+  },
+
+  // change "Status", "Priority" or "Size" of an "Item" to given "Option"
+  async changeProjectField(projectId: any, itemId: any, fieldName: string, fieldOptionId: string) {
+    const fieldId = await this.getFieldId(projectId, fieldName);
 
     try {
       await graphqlWithAuth(
         `mutation UpdateProjectItem (
                 $projectId: ID!
                 $itemId: ID!
-                $statusFieldId: ID!
-                $statusFieldOptionID: String!
+                $fieldId: ID!
+                $fieldOptionId: String!
             ) {
                 updateProjectV2ItemFieldValue(
                     input: {
                         projectId: $projectId
                         itemId: $itemId
-                        fieldId: $statusFieldId
+                        fieldId: $fieldId
                         value: {
-                            singleSelectOptionId: $statusFieldOptionID
+                            singleSelectOptionId: $fieldOptionId
                         }
                     }
                 ) {
@@ -230,69 +342,10 @@ export default {
                 }
             }`,
         {
-          projectId: projectID,
-          itemId: itemID,
-          statusFieldId: statusFieldID,
-          statusFieldOptionID: statusFieldOptionID,
-        }
-      );
-    } catch (error: any) {
-      console.log(error);
-    }
-  },
-
-  // return the ID of "Lead Contributor" field
-  async getLeadContributorFieldID(projectID: any) {
-    const fields = await this.getProjectFields(projectID);
-    return fields?.node.fields.nodes.find((field: any) => field.name === "Lead Contributor")?.id;
-  },
-
-  // return value of "Lead Contributor" field
-  async getLeadContributor(projectID: any, issueNumber: number) {
-    const issueItem = await this.getIssueItem(projectID, issueNumber);
-    return issueItem?.fieldValues.nodes.find((fieldValue: any) => fieldValue.field?.name === "Lead Contributor")?.text;
-  },
-
-  // set "Lead Contributor" field of an "Item" to "User"
-  async addLeadContributor(projectID: any, itemID: any, leadContributorFieldID: any, user: any) {
-    await this.updateLeadContributor(projectID, itemID, leadContributorFieldID, user);
-  },
-
-  // set "Lead Contributor" field of an "Item" to empty
-  async removeLeadContributor(projectID: any, itemID: any, leadContributorFieldID: any) {
-    await this.updateLeadContributor(projectID, itemID, leadContributorFieldID, "");
-  },
-
-  // put "User" into "Lead Contributor" field
-  async updateLeadContributor(projectID: any, itemID: any, leadContributorFieldID: any, user: any) {
-    try {
-      await graphqlWithAuth(
-        `mutation UpdateProjectItem (
-                    $projectId: ID!
-                    $itemId: ID!
-                    $leadContributorFieldId: ID!
-                    $user: String!
-            ) {
-                updateProjectV2ItemFieldValue(
-                    input: {
-                        projectId: $projectId
-                        itemId: $itemId
-                        fieldId: $leadContributorFieldId
-                        value: {
-                            text: $user
-                        }
-                    }
-                ) {
-                    projectV2Item {
-                        id
-                    }
-                }
-            }`,
-        {
-          projectId: projectID,
-          itemId: itemID,
-          leadContributorFieldId: leadContributorFieldID,
-          user: user,
+          projectId: projectId,
+          itemId: itemId,
+          fieldId: fieldId,
+          fieldOptionId: fieldOptionId,
         }
       );
     } catch (error: any) {
@@ -302,8 +355,9 @@ export default {
 
   // return the PRs given a repository
   async getPullRequests(org: string, repository: string) {
-    return await graphqlWithAuth(
-      `query ($org: String!, $repository: String!, $pagination: Int!, $maxPagination: Int!) {
+    try {
+      return await graphqlWithAuth(
+        `query ($org: String!, $repository: String!, $pagination: Int!, $maxPagination: Int!) {
             repository(owner: $org, name: $repository) {
                 pullRequests(first: $maxPagination) {
                     nodes {
@@ -317,19 +371,23 @@ export default {
                                 login
                             }
                         }
+                        url
                         merged
                         closed
                     }
                 }
             }
         }`,
-      {
-        org: org,
-        repository: repository,
-        pagination: pagination,
-        maxPagination: maxPagination,
-      }
-    );
+        {
+          org: org,
+          repository: repository,
+          pagination: pagination,
+          maxPagination: maxPagination,
+        }
+      );
+    } catch (error: any) {
+      console.log(error);
+    }
   },
 
   // return the "PR" item given a repository and PR number
